@@ -266,11 +266,14 @@ class DownloaderSong(DownloaderAudio):
                 info = '256 kb/s'
             logger.info(f"The current bit rate is {info}")
 
-        if gid_metadata:
+        if self.lrc_only:
             logger.debug("Getting lyrics")
-            lyrics = self.get_lyrics(track_id)
+            lyrics = self.get_lyrics(track_id).synced
         else:
-            lyrics = Lyrics()
+            try:
+                lyrics = self.get_lyrics(track_id).unsynced
+            except:
+                lyrics = Lyrics()
 
         logger.debug("Getting track credits")
         track_credits = self.downloader.spotify_api.get_track_credits(track_id)
@@ -279,7 +282,7 @@ class DownloaderSong(DownloaderAudio):
             track_metadata,
             album_metadata,
             track_credits,
-            lyrics.unsynced,
+            lyrics,
         )
 
         if playlist_metadata:
@@ -307,9 +310,9 @@ class DownloaderSong(DownloaderAudio):
         decrypted_path = None
         remuxed_path = None
 
-        if self.lrc_only:
-            pass
-        elif final_path.exists() and not self.downloader.overwrite:
+        #if self.lrc_only:
+        #    pass
+        if final_path.exists() and not self.downloader.overwrite:
             logger.warning(f'Track already exists at "{final_path}", skipping')
         else:
             if not decryption_key:
