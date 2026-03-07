@@ -317,7 +317,7 @@ class DownloaderSong(DownloaderAudio):
         else:
             if not decryption_key:
                 logger.debug("Getting decryption key")
-                decryption_key = self.get_decryption_key(stream_info)
+                decryption_key = self.get_decryption_key(stream_info, track_metadata['data']['trackUnion']['duration']['totalMilliseconds'], track_id)
             encrypted_path = self.downloader.get_file_temp_path(
                 track_id,
                 "_encrypted",
