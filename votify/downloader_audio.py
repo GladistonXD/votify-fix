@@ -94,14 +94,13 @@ class DownloaderAudio:
         return stream_info
 
 
-    def get_decryption_key(self, stream_info: StreamInfoAudio) -> str:
+    def get_decryption_key(self, stream_info: StreamInfoAudio, times, track_id) -> str:
         decryption_key = None
         for attempt in range(10):
             try:
                 if self.audio_quality in AAC_AUDIO_QUALITIES:
                     _, decryption_key = self.downloader.get_widevine_decryption_key(
-                        stream_info.widevine_pssh,
-                        "audio",
+                        stream_info.widevine_pssh, "audio", stream_info.quality, times, track_id,
                     )
                 else:
                     decryption_key = self.downloader.get_playplay_decryption_key(
