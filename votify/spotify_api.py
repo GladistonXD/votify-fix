@@ -235,24 +235,58 @@ class SpotifyApi:
         media_type: str
     ) -> dict | None:
         self._refresh_session_auth()
+        params = {
+            "manifestFileFormat": [
+                "file_ids_mp4",
+                "manifest_ids_video"
+            ]
+        }
+        response = self.session.get(
+            self.TRACK_PLAYBACK_API_URL.format(
+                media_type=media_type,
+                media_id=media_id
+            ),
+            params=params
+        )
+        return response.json()
 
-        TRACK_ID = media_id
-        if not hasattr(self, 'cached_device_id'):
-            self.cached_device_id = secrets.token_hex(20)
+    def get_decryption_keys_part1(self, track_id, audio_quality, times):
 
-        DEVICE_ID = self.cached_device_id
+        if not hasattr(self, 'execution_count'):
+            self.execution_count = 0
 
-        ACCESS_TOKEN = self.session.headers["Authorization"].replace("Bearer ", "")
+        if not hasattr(self, 'global_seq_num'):
+            self.global_seq_num = 2
+
+        if not hasattr(self, 'cached_device_id') or self.execution_count >= 1:
+            self.cached_device_id = secrets.token_hex(16)
+            self.execution_count = 0
+            #print(f"{self.cached_device_id}")
+
+        self.execution_count += 1
+        local_device_id = self.cached_device_id
+
+        try:
+            ACCESS_TOKEN = self.session.headers["Authorization"].replace("Bearer ", "")
+            CLIENT_TOKEN = self.session.headers["client-token"]
+        except:
+            return None
+
         WS_URL = f"wss://dealer.spotify.com/?access_token={ACCESS_TOKEN}"
-        URL_REGISTRO = "https://spclient.wg.spotify.com/track-playback/v1/devices"
-        URL_COMMAND = f"https://spclient.wg.spotify.com/connect-state/v1/player/command/from/{DEVICE_ID}/to/{DEVICE_ID}"
-        URL = f"https://gue1-spclient.spotify.com/track-playback/v1/devices/{DEVICE_ID}/state"
+        URL_REGISTRO = f"https://gue1-spclient.spotify.com/track-playback/v1/devices"
+        URL_COMMAND = f"https://gue1-spclient.spotify.com/connect-state/v1/player/command/from/{local_device_id}/to/{local_device_id}"
+        URL_STATE = f"https://gue1-spclient.spotify.com/track-playback/v1/devices/{local_device_id}/state"
+        URL_MEMBER_STATE = f"https://gue1-spclient.spotify.com/connect-state/v1/devices/hobs_{local_device_id}"
+        URL_TELEMETRY = "https://gue1-spclient.spotify.com/melody/v1/msg/batch"
 
         class Context:
             conn_id = None
             machine_id = None
             state_id = None
+            file_id = None
+            found = False
             stop_event = threading.Event()
+            ws_client = None
 
         ctx = Context()
 
@@ -268,152 +302,454 @@ class SpotifyApi:
                     if res: return res
             return None
 
+        def scan_and_extract(obj):
+            if not obj or not isinstance(obj, dict): return
+            tracks = []
+            if "tracks" in obj:
+                tracks = obj.get("tracks") or []
+            elif "track" in obj:
+                tracks = [obj.get("track")]
+            elif "player_state" in obj:
+                ps = obj.get("player_state") or {}
+                if "track" in ps: tracks.append(ps.get("track"))
+                if "tracks" in ps: tracks.extend(ps.get("tracks") or [])
+
+            for track in tracks:
+                if not isinstance(track, dict): continue
+                uri = track.get("uri") or ""
+                meta = track.get("metadata") or {}
+                if not uri: uri = meta.get("uri") or ""
+                linked_from = meta.get("linked_from_uri") or ""
+
+                if (track_id in uri) or (linked_from and track_id in linked_from):
+                    manifest = track.get("manifest")
+                    if manifest:
+                        fid = None
+                        for key in ["file_ids_mp4", "file_ids_mp4_dual", "file_ids_mp3"]:
+                            mp4s = manifest.get(key) or []
+                            for f in mp4s:
+                                if f.get("bitrate") == int(audio_quality):
+                                    fid = f.get("file_id")
+                                    break
+                            if fid: break
+                        if fid:
+                            ctx.file_id = fid
+                            ctx.found = True
+
         def on_message(ws, message):
             try:
                 data = json.loads(message)
-                if "headers" in data and "Spotify-Connection-Id" in data["headers"]:
-                    ctx.conn_id = data["headers"]["Spotify-Connection-Id"]
+                if "headers" in data:
+                    h = data.get("headers") or {}
+                    if "Spotify-Connection-Id" in h:
+                        ctx.conn_id = h["Spotify-Connection-Id"]
 
                 new_mid = find_key(data, "state_machine_id")
-                if new_mid:
-                    if new_mid != ctx.machine_id:
-                        ctx.machine_id = new_mid
+                if new_mid and new_mid != ctx.machine_id: ctx.machine_id = new_mid
 
-                    new_sid = find_key(data, "state_id")
-                    if new_sid and new_sid != ctx.state_id:
-                        ctx.state_id = new_sid
+                new_sid = find_key(data, "state_id")
+                if new_sid and new_sid != ctx.state_id: ctx.state_id = new_sid
+
+                if "payloads" in data:
+                    payloads = data.get("payloads") or []
+                    for p in payloads:
+                        if "cluster" in p: scan_and_extract(p.get("cluster"))
+                        if "state_machine" in p: scan_and_extract(p.get("state_machine"))
+                scan_and_extract(data)
             except:
                 pass
 
-        def start_socket():
-            ws = websocket.WebSocketApp(WS_URL, on_message=on_message)
-            ws.run_forever()
-
-        def keep_alive_loop():
-            seq_num = 1
-            last_mid = None
-            attempt_count = 0
-            wait_ids_count = 0
-
+        def websocket_ping_loop():
             while not ctx.stop_event.is_set():
-                if ctx.machine_id and ctx.state_id and ctx.conn_id:
-                    wait_ids_count = 0
-
-                    if ctx.machine_id != last_mid:
-                        seq_num = 1
-                        last_mid = ctx.machine_id
-
-                    payload = {
-                        "seq_num": 0,
-                        "state_ref": {
-                            "state_machine_id": ctx.machine_id,
-                            "state_id": ctx.state_id,
-                            "paused": False,
-                        },
-                        "sub_state": {
-                            "playback_speed": 1,
-                            "position": 1258,
-                            "duration": 199954,
-                            "media_type": "AUDIO",
-                            "bitrate": 128000,
-                            "audio_quality": "HIGH",
-                            "format": 10,
-                            "is_video_on": False,
-                        },
-                        "previous_position": 1258,
-                        "debug_source": "started_playing",
-                    }
-
+                time.sleep(60)
+                if ctx.ws_client:
                     try:
-                        r = self.session.put(
-                            URL,
-                            data=json.dumps(payload, separators=(",", ":"))
-                        )
-
-                        if r.status_code == 200:
-                            ctx.stop_event.set()
-                            break
-                        else:
-                            attempt_count += 1
-
-                    except Exception as e:
-                        attempt_count += 1
-
-                    if attempt_count >= 3:
-                        ctx.stop_event.set()
+                        ctx.ws_client.send('{"type":"ping"}')
+                    except:
                         break
 
-                    seq_num += 1
-                    time.sleep(3)
+        def start_socket():
+            ctx.ws_client = websocket.WebSocketApp(WS_URL, on_message=on_message)
+            ctx.ws_client.run_forever()
 
-                else:
-                    wait_ids_count += 1
-                    time.sleep(0.5)
+        threading.Thread(target=start_socket, daemon=True).start()
+        threading.Thread(target=websocket_ping_loop, daemon=True).start()
 
-                    if wait_ids_count > 20:
-                        ctx.stop_event.set()
-                        break
-
-        t_ws = threading.Thread(target=start_socket, daemon=True)
-        t_ws.start()
-
-        while not ctx.conn_id:
+        for _ in range(100):
+            if ctx.conn_id: break
             time.sleep(0.1)
+        if not ctx.conn_id:
+            return None
 
-        self.session.headers.update({
-            "x-spotify-connection-id": ctx.conn_id
-        })
+        HEADERS_BASE = {
+            "accept": "application/json",
+            "authorization": f"Bearer {ACCESS_TOKEN}",
+            "client-token": CLIENT_TOKEN,
+            "x-spotify-connection-id": ctx.conn_id,
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
 
         reg_payload = {
             "device": {
                 "brand": "spotify",
-                "capabilities": {"change_volume": True, "enable_play_token": True, "supports_file_media_type": True,
-                    "manifest_formats": ["file_ids_mp4", "file_ids_mp4_dual"], "audio_podcasts": True,
-                    "video_playback": True},
-                "device_id": DEVICE_ID, "device_type": "computer", "metadata": {}, "model": "web_player",
-                "name": "Python Final", "platform_identifier": "web_player windows 10;chrome 124.0.0.0;desktop",
-                "is_group": False
+                "capabilities": {
+                    "change_volume": True, "enable_play_token": True, "supports_file_media_type": True,
+                    "play_token_lost_behavior": "pause", "disable_connect": False, "audio_podcasts": True,
+                    "video_playback": True,
+                    "manifest_formats": ["file_ids_mp3", "file_urls_mp3", "manifest_urls_audio_ad",
+                                         "manifest_ids_video", "file_urls_external", "file_ids_mp4",
+                                         "file_ids_mp4_dual"]
+                },
+                "device_id": local_device_id, "device_type": "computer", "metadata": {},
+                "model": "web_player", "name": "Web Player (Chrome)",
+                "platform_identifier": "web_player windows 10;chrome 120.0.0.0;desktop", "is_group": False
             },
-            "connection_id": ctx.conn_id, "client_version": "harmony:4.62.1-5dc29b8a7", "volume": 65535
+            "connection_id": ctx.conn_id, "client_version": "harmony:4.43.2-a61ecaf5",
+            "volume": 65535, "outro_endcontent_snooping": False
         }
-        self.session.post(URL_REGISTRO, json=reg_payload)
+        requests.post(URL_REGISTRO, headers=HEADERS_BASE, json=reg_payload)
 
-        t_put = threading.Thread(target=keep_alive_loop, daemon=True)
-        t_put.start()
+        connect_payload = {
+            "member_type": "CONNECT_STATE",
+            "device": {"device_info": {
+                "capabilities": {"can_be_player": False, "hidden": True, "needs_full_player_state": True}}}
+        }
+        requests.put(URL_MEMBER_STATE, headers=HEADERS_BASE, json=connect_payload)
 
-        track_uri = f"spotify:track:{TRACK_ID}"
+        track_uri = f"spotify:track:{track_id}"
+        current_command_id = secrets.token_hex(16)
+
         cmd_payload = {
             "command": {
                 "context": {"uri": track_uri, "url": f"context://{track_uri}", "metadata": {}},
-                "play_origin": {"feature_identifier": "harmony", "feature_version": "4.26.0"},
-                "options": {"license": "premium", "skip_to": {"track_uri": track_uri}, "player_options_override": {}},
+                "play_origin": {
+                    "feature_identifier": "track",
+                    "feature_version": "open-server_2026-03-06_1772762959532_dc79fa1",
+                    "referrer_identifier": "home"
+                },
+                "options": {"license": "tft", "skip_to": {}, "seek_to": 30000, "player_options_override": {}},
+                "logging_params": {"page_instance_ids": [], "interaction_ids": [],
+                                   "command_id": current_command_id},
                 "endpoint": "play"
             }
         }
-        self.session.post(URL_COMMAND, json=cmd_payload)
+
+        requests.post(URL_COMMAND, headers=HEADERS_BASE, json=cmd_payload)
+
+        timeout = 0
+        while not ctx.stop_event.is_set() and timeout < 60:
+            if ctx.found:
+                break
+
+            time.sleep(0.5)
+            timeout += 1
+
+        shared_state = None
+
+        if ctx.file_id:
+            try:
+                playback_id = secrets.token_hex(16)
+                next_playback_id = secrets.token_hex(16)
+                session_id = str(int(time.time() * 1000))
+                current_time_ms = int(time.time() * 1000)
+
+                telemetry_headers = HEADERS_BASE.copy()
+                telemetry_headers["content-type"] = "text/plain;charset=UTF-8"
+
+                telemetry_payload = {
+                    "messages": [
+                        {
+                            "type": "track_stream_verification",
+                            "message": {
+                                "play_track": track_uri, "playback_id": playback_id, "ms_played": 16,
+                                "ms_nominal_played": 16, "session_id": session_id, "sequence_id": 2,
+                                "next_playback_id": next_playback_id, "playback_service": "track-playback"
+                            }
+                        },
+                        {
+                            "type": "jssdk_playback_stats",
+                            "message": {
+                                "play_track": track_uri, "file_id": ctx.file_id, "playback_id": playback_id,
+                                "internal_play_id": "17", "memory_cached": True, "persistent_cached": False,
+                                "audio_format": "mp4", "video_format": "", "manifest_id": ctx.file_id,
+                                "protected": True, "key_system": "com.widevine.alpha", "key_system_impl": "native",
+                                "urls_json": '{"version":"1.0.0","urls":[{"url":"","segments":3,"avg_bw":0}]}',
+                                "start_time": current_time_ms - 30000, "end_time": current_time_ms,
+                                "external_start_time": 0, "ms_play_latency": 143, "ms_init_latency": 135,
+                                "ms_head_latency": 609, "ms_first_bytes_latency": 612, "ms_manifest_latency": None,
+                                "ms_resolve_latency": None, "ms_license_session_latency": 0,
+                                "ms_license_generation_latency": 141, "ms_license_request_latency": 312,
+                                "ms_license_update_latency": 141, "ms_played": 16, "ms_nominal_played": 16,
+                                "ms_file_duration": times, "ms_actual_duration": times, "ms_metadata_duration": 0,
+                                "ms_start_position": 30000, "ms_end_position": 30016, "ms_initial_rebuffer": 141,
+                                "ms_seek_rebuffer": 0, "ms_seek_rebuffer_longest": 0, "ms_stall_rebuffer": 0,
+                                "ms_stall_rebuffer_longest": 0, "ms_played_per_surface": {}, "ms_played_visible": 0,
+                                "n_stalls": 0, "n_rendition_upgrade": 0, "n_rendition_downgrade": 0,
+                                "bps_bandwidth_max": 0, "bps_bandwidth_min": 0, "bps_bandwidth_avg": 0,
+                                "n_seekback": 0, "n_seekforward": 0, "audio_start_bitrate": audio_quality,
+                                "video_start_bitrate": None, "start_bitrate": audio_quality, "time_weighted_bitrate": 0,
+                                "reason_start": "trackdone", "reason_end": "remote", "initially_paused": False,
+                                "had_error": False, "n_warnings": 0, "n_navigator_offline": 0,
+                                "session_id": session_id, "sequence_id": 2, "client_id": "", "correlation_id": "",
+                                "n_dropped_video_frames": 0, "n_total_video_frames": 0, "resolution_max": 0,
+                                "resolution_min": 0, "total_bytes": 496099, "strategy": "MSE",
+                                "ms_played_per_audio_format": {f"mp4a.40.2;{audio_quality}": 16},
+                                "ms_played_per_video_format": {}
+                            }
+                        }
+                    ],
+                    "sdk_id": "harmony:4.64.0", "platform": "web_player windows 10;chrome 117.0.0.0;desktop",
+                    "client_version": "0.0.0"
+                }
+
+                requests.post(URL_TELEMETRY, headers=telemetry_headers, data=json.dumps(telemetry_payload))
+
+                next_machine_id = secrets.token_urlsafe(22)
+
+
+                connect_command_payload = {
+                    "messages": [
+                        {
+                            "type": "jssdk_connect_command",
+                            "message": {
+                                "ms_ack_duration": 1013, "ms_request_latency": 625,
+                                "command_id": current_command_id,
+                                "command_type": "play", "target_device_brand": "spotify",
+                                "target_device_model": "web_player",
+                                "target_device_client_id": "d8a5ed958d274c2e8ee717e6a4b0971d",
+                                "target_device_id": local_device_id, "interaction_ids": "",
+                                "play_origin": "{\"feature_identifier\":\"track\",\"feature_version\":\"open-server_2026-03-06_1772762959532_dc79fa1\",\"referrer_identifier\":\"home\"}",
+                                "result": "success", "http_response": "", "http_status_code": 200
+                            }
+                        }
+                    ],
+                    "sdk_id": "harmony:4.64.0-63a650210",
+                    "platform": "web_player windows 10;chrome 117.0.0.0;desktop",
+                    "client_version": "0.0.0"
+                }
+                requests.post(URL_TELEMETRY, headers=telemetry_headers, data=json.dumps(connect_command_payload))
+
+                self.global_seq_num += 1
+                before_load_payload = {
+                    "seq_num": self.global_seq_num,
+                    "state_ref": {
+                        "state_machine_id": next_machine_id,
+                        "state_id": next_playback_id,
+                        "paused": False
+                    },
+                    "sub_state": {
+                        "playback_speed": 1, "position": 0, "duration": times,
+                        "media_type": "AUDIO", "bitrate": audio_quality, "audio_quality": "HIGH",
+                        "format": 10
+                    },
+                    "debug_source": "before_track_load"
+                }
+                requests.put(URL_STATE, headers=HEADERS_BASE, json=before_load_payload)
+
+                self.global_seq_num += 1
+                speed_0_payload = {
+                    "seq_num": self.global_seq_num,
+                    "state_ref": {"state_machine_id": next_machine_id, "state_id": next_playback_id,
+                                  "paused": False},
+                    "sub_state": {"playback_speed": 0, "position": 0, "duration": times, "media_type": "AUDIO",
+                                  "bitrate": audio_quality, "audio_quality": "HIGH", "format": 10},
+                    "previous_position": 0, "debug_source": "speed_changed"
+                }
+                requests.put(URL_STATE, headers=HEADERS_BASE, json=speed_0_payload)
+
+                self.global_seq_num += 1
+                speed_1_payload = {
+                    "seq_num": self.global_seq_num,
+                    "state_ref": {"state_machine_id": next_machine_id, "state_id": next_playback_id,
+                                  "paused": False},
+                    "sub_state": {"playback_speed": 1, "position": 0, "duration": times, "media_type": "AUDIO",
+                                  "bitrate": audio_quality, "audio_quality": "HIGH", "format": 10},
+                    "debug_source": "speed_changed"
+                }
+                requests.put(URL_STATE, headers=HEADERS_BASE, json=speed_1_payload)
+
+                playback_start_payload = {
+                    "messages": [{"type": "jssdk_playback_start",
+                                  "message": {"play_track": track_uri, "file_id": ctx.file_id,
+                                              "playback_id": next_playback_id, "session_id": session_id,
+                                              "ms_start_position": 0, "initially_paused": False,
+                                              "client_id": "",
+                                              "correlation_id": "", "feature_identifier": ""}}],
+                    "sdk_id": "harmony:4.64.0", "platform": "web_player windows 10;chrome 117.0.0.0;desktop",
+                    "client_version": "0.0.0"
+                }
+                requests.post(URL_TELEMETRY, headers=telemetry_headers, data=json.dumps(playback_start_payload))
+
+                shared_state = {
+                    "ctx": ctx,
+                    "times": times,
+                    "track_uri": track_uri,
+                    "local_device_id": local_device_id,
+                    "URL_STATE": URL_STATE,
+                    "URL_TELEMETRY": URL_TELEMETRY,
+                    "HEADERS_BASE": HEADERS_BASE,
+                    "telemetry_headers": telemetry_headers,
+                    "next_machine_id": next_machine_id,
+                    "next_playback_id": next_playback_id,
+                    "session_id": session_id,
+                    "current_time_ms": current_time_ms
+                }
+
+            except Exception as e:
+                print(f"{e}")
+
+        if not shared_state:
+            ctx.stop_event.set()
+            if ctx.ws_client:
+                ctx.ws_client.close()
+        return shared_state
+
+
+    def get_decryption_keys_part2(self, shared_state, audio_quality):
+        if not shared_state:
+            return None
+
+        ctx = shared_state["ctx"]
+        times = shared_state["times"]
+        track_uri = shared_state["track_uri"]
+        local_device_id = shared_state["local_device_id"]
+        URL_STATE = shared_state["URL_STATE"]
+        URL_TELEMETRY = shared_state["URL_TELEMETRY"]
+        HEADERS_BASE = shared_state["HEADERS_BASE"]
+        telemetry_headers = shared_state["telemetry_headers"]
+        next_machine_id = shared_state["next_machine_id"]
+        next_playback_id = shared_state["next_playback_id"]
+        session_id = shared_state["session_id"]
+        current_time_ms = shared_state["current_time_ms"]
 
         try:
-            while not ctx.stop_event.is_set():
-                time.sleep(1)
-        except KeyboardInterrupt:
-            ctx.stop_event.set()
+            self.global_seq_num += 1
+            started_playing = {
+                "seq_num": self.global_seq_num,
+                "state_ref": {"state_machine_id": ctx.machine_id, "state_id": ctx.state_id,
+                              "paused": False},
+                "sub_state": {
+                    "playback_speed": 1, "position": 1054, "duration": times,
+                    "media_type": "AUDIO", "bitrate": audio_quality, "audio_quality": "HIGH",
+                    "format": 10, "is_video_on": False,
+                },
+                "previous_position": 1054,
+                "debug_source": "started_playing",
+            }
+            requests.put(URL_STATE, headers=HEADERS_BASE, json=started_playing)
 
-        ##################################################
+            self.global_seq_num += 1
+            played_threshold_reached = {
+                "seq_num": self.global_seq_num,
+                "state_ref": {"state_machine_id": ctx.machine_id, "state_id": ctx.state_id,
+                              "paused": False},
+                "sub_state": {
+                    "playback_speed": 1, "position": 30012, "duration": times,
+                    "media_type": "AUDIO", "bitrate": audio_quality, "audio_quality": "HIGH",
+                    "format": 10
+                },
+                "previous_position": 30012,
+                "debug_source": "played_threshold_reached",
+            }
+            requests.put(URL_STATE, headers=HEADERS_BASE, json=played_threshold_reached)
 
-        params = {
-            "manifestFileFormat": [
-                "file_ids_mp4",
-                "manifest_ids_video"
-            ]
-        }
-        response = self.session.get(
-            self.TRACK_PLAYBACK_API_URL.format(
-                media_type=media_type,
-                media_id=media_id
-            ),
-            params=params
-        )
-        return response.json()
+            self.global_seq_num += 1
+            before_load_payload = {
+                "seq_num": self.global_seq_num,
+                "state_ref": {
+                    "state_machine_id": next_machine_id,
+                    "state_id": next_playback_id,
+                    "paused": True
+                },
+                "sub_state": {
+                    "playback_speed": 0, "position": 0, "duration": times,
+                    "media_type": "AUDIO", "bitrate": audio_quality, "audio_quality": "HIGH",
+                    "format": 10, "is_video_on": False
+                },
+                "previous_position": times,
+                "debug_source": "before_track_load"
+            }
+            requests.put(URL_STATE, headers=HEADERS_BASE, json=before_load_payload)
+
+            self.global_seq_num += 1
+            final_state_payload = {
+                "seq_num": self.global_seq_num,
+                "state_ref": {
+                    "state_machine_id": ctx.machine_id,
+                    "state_id": ctx.state_id,
+                    "paused": True
+                },
+                "sub_state": {
+                    "playback_speed": 0, "position": 30016, "duration": times,
+                    "media_type": "AUDIO", "bitrate": audio_quality, "audio_quality": "HIGH",
+                    "format": 10, "is_video_on": False
+                },
+                "previous_position": 30016,
+                "playback_stats": {
+                    "ms_total_est": times, "ms_metadata_duration": 0, "ms_manifest_latency": 0,
+                    "ms_latency": 143, "ms_first_bytes_latency": 612, "start_offset_ms": 30000,
+                    "ms_initial_buffering": 141, "ms_initial_rebuffer": 141, "ms_seek_rebuffering": 0,
+                    "ms_stalled": 0, "max_ms_seek_rebuffering": 0, "max_ms_stalled": 0, "n_stalls": 0,
+                    "n_rendition_upgrade": 0, "n_rendition_downgrade": 0, "bps_bandwidth_max": 0,
+                    "bps_bandwidth_min": 0, "bps_bandwidth_avg": 0, "audiocodec": "mp4",
+                    "audio_start_bitrate": audio_quality, "video_start_bitrate": None, "start_bitrate": audio_quality,
+                    "time_weighted_bitrate": 0, "key_system": "widevine", "ms_key_latency": 594,
+                    "total_bytes": 496099, "local_time_ms": current_time_ms, "n_dropped_video_frames": 0,
+                    "n_total_video_frames": 0, "resolution_max": 0, "resolution_min": 0, "strategy": "MSE",
+                    "ms_played_per_surface": {}, "ms_played_visible": 0,
+                    "ms_played_per_audio_format": {f"mp4a.40.2;{audio_quality}": 16}, "ms_played_per_video_format": {}
+                },
+                "debug_source": "track_data_finalized"
+            }
+            requests.put(URL_STATE, headers=HEADERS_BASE, json=final_state_payload)
+
+
+            json_data_str = json.dumps({
+                "track": {"uri": track_uri, "playableURI": track_uri, "fileId": ctx.file_id,
+                          "resolvedURL": None,
+                          "contentType": "music", "playable": True, "isAd": False, "format": "MP4",
+                          "fileFormat": 10, "mediaType": "audio", "noManifest": False,
+                          "metadata": {"playbackQuality": "HIGH", "hifiStatus": "NONE"},
+                          "options": {"position": 30000, "paused": False, "playedThreshold": 30000,
+                                      "useDefaultPlaybackSpeed": True, "playbackSpeed": 1,
+                                      "mediaPlaybackMode": "audio"},
+                          "logData": {"noLog": False, "noTSV": False, "deviceId": local_device_id,
+                                      "playbackId": next_playback_id, "reason": "remote",
+                                      "displayTrack": track_uri,
+                                      "playContext": track_uri, "impressionURLs": None,
+                                      "format": {"codec": "MP4", "bitrate": audio_quality}, "uriType": "track",
+                                      "displayTitle": "Unknown", "displayGroup": "Unknown",
+                                      "displayDuration": 234466, "playbackService": "track-playback"},
+                          "stateId": next_playback_id, "audioGain": -8.0},
+                "event_position": 30000, "prev_position": 30000, "curr_position": 30000
+            })
+
+            client_events_payload = {
+                "messages": [
+                    {"type": "client_event",
+                     "message": {"source": "harmony:track_playback:client", "context": "unknown",
+                                 "event": "position_changed", "event_version": "1.0.0", "test_version": "",
+                                 "source_version": "4.64.0-63a650210", "source_vendor": "spotify",
+                                 "json_data": json_data_str}},
+                    {"type": "client_event",
+                     "message": {"source": "harmony:track_playback:client", "context": "unknown",
+                                 "event": "position_changed - same position as previous event",
+                                 "event_version": "1.0.0", "test_version": "",
+                                 "source_version": "4.64.0-63a650210",
+                                 "source_vendor": "spotify", "json_data": json_data_str}}
+                ],
+                "sdk_id": "harmony:4.64.0-63a650210",
+                "platform": "web_player windows 10;chrome 117.0.0.0;desktop",
+                "client_version": "0.0.0"
+            }
+            requests.post(URL_TELEMETRY, headers=telemetry_headers, data=json.dumps(client_events_payload))
+
+        except Exception as e:
+            print(f"{e}")
+        ctx.stop_event.set()
+        if ctx.ws_client:
+            ctx.ws_client.close()
+
 
     def get_lyrics(self, track_id: str) -> dict | None:
         self._refresh_session_auth()
