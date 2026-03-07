@@ -726,8 +726,13 @@ class Downloader:
         self,
         pssh: bytes,
         media_type: str,
+        audio_quality: str,
+        times: str,
+        track_id: str,
     ) -> tuple[str, str]:
         try:
+            if 'audio' in media_type:
+                part1 = self.spotify_api.get_decryption_keys_part1(track_id, audio_quality, times)
             if self.cdm is None:
                 config = {
                     "device_type": "ANDROID",
@@ -761,6 +766,8 @@ class Downloader:
                 key_id = keys.kid.hex
 
         finally:
+            if 'audio' in media_type:
+                part2 = self.spotify_api.get_decryption_keys_part2(part1, audio_quality)
             try:
                 self.cdm.close(cdm_session)
             except:
