@@ -95,6 +95,7 @@ class DownloaderEpisode(DownloaderAudio):
             product_name: dict = None,
             decryption_key: bytes = None,
     ):
+        print(show_metadata)
         if not episode_metadata:
             episode_metadata = self.downloader.spotify_api.get_episode(episode_id)
 
@@ -209,7 +210,7 @@ class DownloaderEpisode(DownloaderAudio):
             logger.warning(f'Episode already exists at "{final_path}", skipping')
         else:
             if not decryption_key:
-                decryption_key = self.get_decryption_key(stream_info)
+                decryption_key = self.get_decryption_key(stream_info,'','')
 
             encrypted_path = self.downloader.get_file_temp_path(episode_id, "_encrypted", file_extension)
             decrypted_path = self.downloader.get_file_temp_path(episode_id, "_decrypted", file_extension)
