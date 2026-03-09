@@ -52,16 +52,16 @@ class Csv(click.ParamType):
     name = "csv"
 
     def __init__(
-        self,
-        subtype: typing.Any,
+            self,
+            subtype: typing.Any,
     ) -> None:
         self.subtype = subtype
 
     def convert(
-        self,
-        value: str | typing.Any,
-        param: click.Parameter,
-        ctx: click.Context,
+            self,
+            value: str | typing.Any,
+            param: click.Parameter,
+            ctx: click.Context,
     ) -> list[typing.Any]:
         if not isinstance(value, str):
             return value
@@ -79,13 +79,10 @@ class Csv(click.ParamType):
         return result
 
 
-
-
-
 def load_config_file(
-    ctx: click.Context,
-    param: click.Parameter,
-    no_config_file: bool,
+        ctx: click.Context,
+        param: click.Parameter,
+        no_config_file: bool,
 ) -> click.Context:
     if no_config_file:
         return ctx
@@ -105,7 +102,7 @@ def load_config_file(
             param
             for param in filtered_params
             if ctx.get_parameter_source(param.name)
-            != click.core.ParameterSource.COMMANDLINE
+               != click.core.ParameterSource.COMMANDLINE
         ]
     )
     ctx.params.update(parsed_params)
@@ -134,10 +131,13 @@ def check_and_fix_config():
                     config_path.write_text(new_content, encoding='utf-8')
         except Exception as e:
             pass
+
+
 try:
     check_and_fix_config()
 except:
     pass
+
 
 @click.command()
 @click.help_option("-h", "--help")
@@ -401,6 +401,12 @@ except:
     default=downloader_video_sig.parameters["remux_mode"].default,
     help="Remux mode for videos.",
 )
+@click.option(
+    "--safemode",
+    "-sm",
+    is_flag=True,
+    help="Pause the download for 60 seconds every 3 songs.",
+)
 # This option should always be last
 @click.option(
     "--no-config-file",
@@ -409,53 +415,52 @@ except:
     callback=load_config_file,
     help="Do not use a config file.",
 )
-
-
 def main(
-    urls: list[str],
-    wait_interval: float,
-    disable_wvd: bool,
-    download_music_videos: bool,
-    download_podcast_videos: bool,
-    force_premium: bool,
-    read_urls_as_txt: bool,
-    config_path: Path,
-    log_level: str,
-    no_exceptions: bool,
-    cookies_path: Path,
-    output_path: Path,
-    temp_path: Path,
-    wvd_path: Path,
-    download_mode: DownloadMode,
-    aria2c_path: str,
-    ffmpeg_path: str,
-    mp4box_path: str,
-    mp4decrypt_path: str,
-    packager_path: str,
-    spotify_secrets_url: str,
-    template_folder_album: str,
-    template_folder_compilation: str,
-    template_file_single_disc: str,
-    template_file_multi_disc: str,
-    template_folder_episode: str,
-    template_file_episode: str,
-    template_folder_music_video: str,
-    template_file_music_video: str,
-    template_file_playlist: str,
-    date_tag_template: str,
-    cover_size: CoverSize,
-    save_cover: bool,
-    save_playlist: bool,
-    overwrite: bool,
-    exclude_tags: list[str],
-    truncate: int,
-    audio_quality: AudioQuality,
-    remux_mode_audio: RemuxModeAudio,
-    lrc_only: bool,
-    no_lrc: bool,
-    video_format: VideoFormat,
-    remux_mode_video: RemuxModeVideo,
-    no_config_file: bool,
+        urls: list[str],
+        wait_interval: float,
+        disable_wvd: bool,
+        download_music_videos: bool,
+        download_podcast_videos: bool,
+        force_premium: bool,
+        read_urls_as_txt: bool,
+        config_path: Path,
+        log_level: str,
+        no_exceptions: bool,
+        cookies_path: Path,
+        output_path: Path,
+        temp_path: Path,
+        wvd_path: Path,
+        download_mode: DownloadMode,
+        aria2c_path: str,
+        ffmpeg_path: str,
+        mp4box_path: str,
+        mp4decrypt_path: str,
+        packager_path: str,
+        spotify_secrets_url: str,
+        template_folder_album: str,
+        template_folder_compilation: str,
+        template_file_single_disc: str,
+        template_file_multi_disc: str,
+        template_folder_episode: str,
+        template_file_episode: str,
+        template_folder_music_video: str,
+        template_file_music_video: str,
+        template_file_playlist: str,
+        date_tag_template: str,
+        cover_size: CoverSize,
+        save_cover: bool,
+        save_playlist: bool,
+        overwrite: bool,
+        exclude_tags: list[str],
+        truncate: int,
+        audio_quality: AudioQuality,
+        remux_mode_audio: RemuxModeAudio,
+        lrc_only: bool,
+        no_lrc: bool,
+        video_format: VideoFormat,
+        remux_mode_video: RemuxModeVideo,
+        safemode: bool,
+        no_config_file: bool,
 ) -> None:
     colorama.just_fix_windows_console()
     logger.setLevel(log_level)
@@ -466,6 +471,11 @@ def main(
     cookies_path = prompt_path(True, cookies_path, "Cookies file")
 
     logger.info("Starting Votify")
+
+    # Aviso caso o safemode não esteja ativado
+    if not safemode:
+        logger.warning("You are not using safe mode, if you want to avoid account suspensions use '--safemode'")
+
     spotify_api = SpotifyApi.from_cookies_file(cookies_path, secrets_url=spotify_secrets_url)
 
     downloader = Downloader(
@@ -542,25 +552,25 @@ def main(
 
         if audio_quality in AAC_AUDIO_QUALITIES:
             if (
-                remux_mode_audio == RemuxModeAudio.FFMPEG
-                and not downloader.ffmpeg_path_full
+                    remux_mode_audio == RemuxModeAudio.FFMPEG
+                    and not downloader.ffmpeg_path_full
             ):
                 logger.critical(X_NOT_FOUND_STRING.format("FFmpeg", ffmpeg_path))
 
             if (
-                remux_mode_audio == RemuxModeAudio.MP4BOX
-                and not downloader.mp4box_path_full
+                    remux_mode_audio == RemuxModeAudio.MP4BOX
+                    and not downloader.mp4box_path_full
             ):
                 logger.critical(X_NOT_FOUND_STRING.format("MP4Box", mp4box_path))
                 return
 
             if (
-                remux_mode_audio
-                in (
+                    remux_mode_audio
+                    in (
                     RemuxModeAudio.MP4DECRYPT,
                     RemuxModeAudio.MP4BOX,
-                )
-                and not downloader.mp4decrypt_path_full
+            )
+                    and not downloader.mp4decrypt_path_full
             ):
                 logger.critical(
                     X_NOT_FOUND_STRING.format("mp4decrypt", mp4decrypt_path)
@@ -569,15 +579,15 @@ def main(
 
         if download_podcast_videos or download_music_videos:
             if (
-                downloader_music_video.remux_mode == RemuxModeVideo.FFMPEG
-                and not downloader.ffmpeg_path_full
+                    downloader_music_video.remux_mode == RemuxModeVideo.FFMPEG
+                    and not downloader.ffmpeg_path_full
             ):
                 logger.critical(X_NOT_FOUND_STRING.format("FFmpeg", ffmpeg_path))
                 return
 
             if (
-                downloader_music_video.remux_mode == RemuxModeVideo.MP4BOX
-                and not downloader.mp4box_path_full
+                    downloader_music_video.remux_mode == RemuxModeVideo.MP4BOX
+                    and not downloader.mp4box_path_full
             ):
                 logger.critical(X_NOT_FOUND_STRING.format("MP4Box", mp4box_path))
                 return
@@ -606,6 +616,7 @@ def main(
         urls = _urls
 
     error_count = 0
+    safemode_counter = 0
 
     global_playlist_metadata = None
 
@@ -617,7 +628,8 @@ def main(
 
             if url_info.type == 'playlist':
                 if hasattr(url_info, 'name') and url_info.name:
-                    global_playlist_metadata = {'name': url_info.name, 'owner_name': getattr(url_info, 'owner', 'Unknown')}
+                    global_playlist_metadata = {'name': url_info.name,
+                                                'owner_name': getattr(url_info, 'owner', 'Unknown')}
 
             if url_info.type == "artist":
                 download_queue = downloader.get_download_queue_from_artist(url_info.id)
@@ -648,7 +660,8 @@ def main(
             if not isinstance(media_metadata, dict):
                 media_metadata = getattr(media_metadata, "__dict__", {})
 
-            if isinstance(media_metadata, dict) and 'track' in media_metadata and isinstance(media_metadata['track'],dict):
+            if isinstance(media_metadata, dict) and 'track' in media_metadata and isinstance(media_metadata['track'],
+                                                                                             dict):
                 clean_track_metadata = media_metadata['track']
             else:
                 clean_track_metadata = media_metadata
@@ -722,7 +735,8 @@ def main(
                                 if 'episode' in media_metadata:
                                     media_metadata_for_download = None
 
-                gid_metadata = downloader.get_gid_metadata(media_id, media_type, spotify_api.user_profile, track_name, download_music_videos, download_podcast_videos)
+                gid_metadata = downloader.get_gid_metadata(media_id, media_type, spotify_api.user_profile, track_name,
+                                                           download_music_videos, download_podcast_videos)
 
                 def get_meta(item, key):
                     val = getattr(item, key, None)
@@ -790,12 +804,16 @@ def main(
                 logger.error(f'({queue_progress}) Failed to download "{track_name}"', exc_info=False)
                 #logger.error(f'({queue_progress}) Failed to download "{track_name}"', exc_info=not no_exceptions)
             finally:
+                if safemode:
+                    safemode_counter += 1
+                    if safemode_counter % 3 == 0:
+                        logger.info("Safe mode activated: Pausing for 60 seconds...")
+                        time.sleep(60)
+
                 if wait_interval > 0 and index != len(download_queue):
                     logger.debug(
                         f"Waiting for {wait_interval} second(s) before continuing"
                     )
                     time.sleep(wait_interval)
-            if len(download_queue) > 1 and index != len(download_queue):
-                time.sleep(15)
 
         logger.info(f"Done ({error_count} error(s))")
