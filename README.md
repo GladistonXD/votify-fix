@@ -45,7 +45,6 @@ The following tools are optional but required for specific features. Add them to
 1. Install the package `votify` using pip:
    ```bash
    pip uninstall votify votify-fix -y
-   pip cache purge
    pip install git+https://github.com/GladistonXD/votify-fix.git
    ```
 2. Set up the cookies file.
@@ -126,6 +125,7 @@ Config file values can be overridden using command-line arguments.
 
 | Command-line argument / Config file key                         | Description                                                        | Default value                                  |
 | --------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------- |
+| `--safemode, -sm` / -                                           | Pauses the download for 60s every 3 songs to avoid suspensions.    | `false`                                        |
 | `--wait-interval`, `-w` / `wait_interval`                       | Wait interval between downloads in seconds.                        | `5`                                            |
 | `--disable-wvd` / `disable_wvd`                                 | Disable Widevine decryption                                        | `false`                                        |
 | `--download-music-videos` / `download_music_videos`             | List and select a related music video to download from songs.      | `false`                                        |
